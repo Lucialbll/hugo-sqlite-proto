@@ -29,6 +29,7 @@ CONTENT = Path("content")
 DB = Path("build/site.db")
 OUT_SEARCH = Path("static/search.json")
 OUT_TAGS = Path("data/tags.json")
+OUT_STATS = Path("data/stats.json")
 
 SCHEMA = """
 CREATE TABLE posts (
@@ -36,7 +37,8 @@ CREATE TABLE posts (
   title   TEXT NOT NULL,
   date    TEXT NOT NULL DEFAULT '',
   summary TEXT NOT NULL DEFAULT '',
-  body    TEXT NOT NULL DEFAULT ''
+  body    TEXT NOT NULL DEFAULT '',
+  words   INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE tags (
   url TEXT NOT NULL REFERENCES posts(url),
@@ -65,7 +67,10 @@ FROM (
   SELECT tag, COUNT(*) AS total FROM tags GROUP BY tag ORDER BY total DESC, tag
 )
 """
-
+Q_STATS = """
+SELECT SUM(words) AS total_words
+FROM posts
+"""
 # --- funciones puras ---------------------------------------------------------
 
 def split_front_matter(text):
@@ -129,6 +134,7 @@ def read_page(path):
         "tags": tags if isinstance(tags, list) else [tags],
         "draft": meta.get("draft", False) is True,
         "text": text,
+        "words": len(re.findall(r"\b\w+\b", text)),
     }
 
 
@@ -139,25 +145,32 @@ def read_all():
 
 # --- efectos: disco y SQL ----------------------------------------------------
 
+
 def build_db(pages):
     DB.parent.mkdir(parents=True, exist_ok=True)
     DB.unlink(missing_ok=True)
     con = sqlite3.connect(DB)
     con.executescript(SCHEMA)
     con.executemany(
-        "INSERT INTO posts(url, title, date, summary, body)"
-        " VALUES (:url, :title, :date, :summary, :text)", pages)
+        "INSERT INTO posts(url, title, date, summary, body, words)"
+        " VALUES (:url, :title, :date, :summary, :text, :words)", pages)
     con.executemany(
         "INSERT OR IGNORE INTO tags(url, tag) VALUES (?, ?)",
         [(p["url"], t) for p in pages for t in p["tags"]])
     con.commit()
     return con
 
-
 def export(con, query, out):
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(con.execute(query).fetchone()[0] + "\n", encoding="utf-8")
+def export_stats(con):
+    OUT_STATS.parent.mkdir(parents=True, exist_ok=True)
+    total_words = con.execute(Q_STATS).fetchone()[0]
 
+    OUT_STATS.write_text(
+        json.dumps({"total_words": total_words}, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8"
+    )
 
 def main():
     if not CONTENT.is_dir():
@@ -166,6 +179,7 @@ def main():
     con = build_db(pages)
     export(con, Q_SEARCH, OUT_SEARCH)
     export(con, Q_TAGS, OUT_TAGS)
+    export_stats(con)
     con.close()
     print(f"index: {len(pages)} páginas → {OUT_SEARCH}, {OUT_TAGS}")
 
